@@ -41,5 +41,7 @@ def run_event_generator(num_users=100, events_per_sec=10):
 
 if __name__ == "__main__":
     run_event_generator()
+    request = requests.get("http://localhost:8000/features/sample_users")
+    print("Users response:", request.json())
 
 
