@@ -78,7 +78,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # --- API ---
-@app.get("/features/{user_id}")
+@app.get("/features/{user_id:int}")
 def get_features(user_id: int):
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
