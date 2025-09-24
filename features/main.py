@@ -13,11 +13,21 @@ def init_db():
     c.execute("""
         CREATE TABLE IF NOT EXISTS user_features (
             user_id INTEGER PRIMARY KEY,
-            last_event_ts REAL,
+            last_event_ts DATETIME DEFAULT CURRENT_TIMESTAMP,
             event_count INTEGER,
             add_to_cart_count INTEGER,
             purchase_count INTEGER
-        )
+        );
+    """)
+    c.execute("""
+            CREATE TABLE IF NOT EXISTS events (
+              event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_id INTEGER,
+              item_id INTEGER,
+              event_type TEXT NOT NULL CHECK (event_type IN ('view', 'click', 'add_to_cart', 'purchase')),
+              event_value REAL,
+              event_ts DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
     """)
     conn.commit()
     conn.close()
@@ -43,17 +53,18 @@ def consume_events():
             continue
 
         event = json.loads(msg.value().decode("utf-8"))
-        user = event["user_id"]
-        action = event["action"]
-        ts = time.time()
+        user_id, timestamp, item_id, event_type = event["user_id"], event["timestamp"], event["item_id"], event["event_type"]
+        ts = time.mktime(time.strptime(timestamp, "%Y-%m-%dT%H:%M:%S.%f"))
+        event_value = [1, 0.8, 0.5, 0.2][["view", "click", "add_to_cart", "purchase"].index(event_type)]
+
 
         # Update features
-        cur.execute("SELECT * FROM user_features WHERE user_id=?", (user,))
+        cur.execute("SELECT * FROM user_features WHERE user_id=?", (user_id,))
         row = cur.fetchone()
         if row is None:
             cur.execute(
                 "INSERT INTO user_features VALUES (?, ?, ?, ?, ?)",
-                (user, ts, 1, int(action=='add_to_cart'), int(action=='purchase'))
+                (user_id, ts, 1, int(event_type=='add_to_cart'), int(event_type=='purchase'))
             )
         else:
             _, last_ts, count, addc, purch = row
@@ -61,10 +72,14 @@ def consume_events():
                 UPDATE user_features
                 SET last_event_ts=?, event_count=?, add_to_cart_count=?, purchase_count=?
                 WHERE user_id=?
-            """, (ts, count+1, addc + int(action=='add_to_cart'), purch + int(action=='purchase'), user))
+            """, (ts, count+1, addc + int(event_type=='add_to_cart'), purch + int(event_type=='purchase'), user_id))
+        
+        # Log event
+        cur.execute("""
+            INSERT INTO events (user_id, item_id, event_type, event_value, event_ts
+            ) VALUES (?, ?, ?, ?, ?)
+        """, (user_id, item_id, event_type, event_value, timestamp))
         conn.commit()
-
-    c.close()
 
 
 # --- FastAPI startup event for DB and consumer thread ---
@@ -115,4 +130,27 @@ def get_sample_users():
             "purchase_count": row[4],
         })
     return users
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
+
+@app.get("/events/recent/{n:int}")
+def get_recent_events(n: int):
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM events ORDER BY event_id DESC LIMIT ?", (n,))
+    rows = cur.fetchall()
+    conn.close()
+    events = []
+    for row in rows:
+        events.append({
+            "event_id": row[0],
+            "user_id": row[1],
+            "item_id": row[2],
+            "event_type": row[3],
+            "event_value": row[4],
+            "event_ts": row[5],
+        })
+    return events
 
